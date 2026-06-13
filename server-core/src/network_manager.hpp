@@ -57,7 +57,6 @@ public:
 
     static std::vector<std::string> get_address_list();
     static std::string get_default_address();
-private:
     static std::string select_default_address(const std::vector<std::string>& address_list);
 
 public:

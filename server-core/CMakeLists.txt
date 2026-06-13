@@ -60,3 +60,12 @@ if(${PLATFORM_NAME} STREQUAL "linux")
 endif()
 
 install(TARGETS server-cmd)
+
+# --- Regression tests --------------------------------------------------------
+# test_private_address is self-contained (no asio / spdlog / protobuf needed).
+enable_testing()
+add_executable(test_private_address tests/test_private_address.cpp)
+if(WIN32)
+	target_link_libraries(test_private_address PRIVATE ws2_32)
+endif()
+add_test(NAME test_private_address COMMAND test_private_address)

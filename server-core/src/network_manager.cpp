@@ -119,17 +119,21 @@ std::string network_manager::select_default_address(const std::vector<std::strin
     }
 
     auto is_private_address = [](const std::string& address) {
-        constexpr uint32_t private_addr_list[] = {
-            0x0a000000,
-            0xac100000,
-            0xc0a80000,
+        // RFC 1918 private IPv4 ranges: (network, mask) pairs.
+        //   10.0.0.0/8       -> network 0x0a000000, mask 0xff000000
+        //   172.16.0.0/12    -> network 0xac100000, mask 0xfff00000
+        //   192.168.0.0/16   -> network 0xc0a80000, mask 0xffff0000
+        constexpr std::pair<uint32_t, uint32_t> private_networks[] = {
+            {0x0a000000, 0xff000000},
+            {0xac100000, 0xfff00000},
+            {0xc0a80000, 0xffff0000},
         };
 
         uint32_t addr;
         inet_pton(AF_INET, address.c_str(), &addr);
         addr = ntohl(addr);
-        for (auto&& private_addr : private_addr_list) {
-            if ((addr & private_addr) == private_addr) {
+        for (auto&& [network, mask] : private_networks) {
+            if ((addr & mask) == network) {
                 return true;
             }
         }
