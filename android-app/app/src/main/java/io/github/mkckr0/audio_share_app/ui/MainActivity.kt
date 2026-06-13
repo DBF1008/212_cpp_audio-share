@@ -41,6 +41,8 @@ import io.github.mkckr0.audio_share_app.model.Channel
 import io.github.mkckr0.audio_share_app.model.appSettingsDataStore
 import io.github.mkckr0.audio_share_app.model.getBoolean
 import io.github.mkckr0.audio_share_app.service.PlaybackService
+import io.github.mkckr0.audio_share_app.service.PlaybackStartSource
+import io.github.mkckr0.audio_share_app.service.startPlayback
 import io.github.mkckr0.audio_share_app.ui.screen.MainScreen
 import io.github.mkckr0.audio_share_app.ui.theme.AppTheme
 import kotlinx.coroutines.MainScope
@@ -85,7 +87,7 @@ class MainActivity : ComponentActivity() {
         val sessionToken =
             SessionToken(this, ComponentName(this, PlaybackService::class.java))
         _mediaControllerFuture = MediaController.Builder(this, sessionToken)
-            .setConnectionHints(bundleOf("src" to "MainActivity"))
+            .setConnectionHints(bundleOf("src" to PlaybackStartSource.APP_START.key))
             .buildAsync()
 
         // auto start playback
@@ -95,7 +97,7 @@ class MainActivity : ComponentActivity() {
                 R.bool.default_start_playback_when_app_start)
 
             if (autoStart) {
-                awaitMediaController().play()
+                startPlayback(this@MainActivity, PlaybackStartSource.APP_START, awaitMediaController())
             }
         }
     }

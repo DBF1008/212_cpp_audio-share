@@ -60,9 +60,9 @@ class BootService : Service() {
                 val sessionToken =
                     SessionToken(this@BootService, ComponentName(this@BootService, PlaybackService::class.java))
                 val mediaController = MediaController.Builder(this@BootService, sessionToken)
-                    .setConnectionHints(bundleOf("src" to "BootService"))
+                    .setConnectionHints(bundleOf("src" to PlaybackStartSource.BOOT.key))
                     .buildAsync().await()
-                mediaController.play()
+                startPlayback(this@BootService, PlaybackStartSource.BOOT, mediaController)
                 delay(3.seconds)
                 mediaController.release()
             }

@@ -33,7 +33,6 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionToken
-import io.github.mkckr0.audio_share_app.model.canStartForegroundService
 import io.github.mkckr0.audio_share_app.service.PlaybackService.Companion.ACTION_STOP_SERVICE
 import io.github.mkckr0.audio_share_app.ui.MainActivity
 import kotlinx.coroutines.MainScope
@@ -90,29 +89,32 @@ class QsTileService : TileService() {
                 sendCustomCommand(SessionCommand(ACTION_STOP_SERVICE, Bundle.EMPTY), Bundle.EMPTY)
                 delay(1.seconds)
             } else {
-                if (applicationContext.canStartForegroundService()) {
-                    play()
-                    delay(1.seconds)
-                } else {
-                    Log.d(tag, "can't start foreground service")
-                    val intent = Intent(
-                        applicationContext,
-                        MainActivity::class.java
-                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        val pendingIntent = PendingIntent.getActivity(
-                            applicationContext,
-                            0,
-                            intent,
-                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                        )
-                        startActivityAndCollapse(pendingIntent)
-                    } else {
-                        @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
-                        startActivityAndCollapse(intent)
-                    }
+                when (startPlayback(applicationContext, PlaybackStartSource.QS_TILE, this)) {
+                    is PlaybackStartResult.Started -> delay(1.seconds)
+                    is PlaybackStartResult.Redirected -> redirectToApp()
+                    else -> {}
                 }
             }
+        }
+    }
+
+    private fun redirectToApp() {
+        Log.d(tag, "redirect to app")
+        val intent = Intent(
+            applicationContext,
+            MainActivity::class.java
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val pendingIntent = PendingIntent.getActivity(
+                applicationContext,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            startActivityAndCollapse(pendingIntent)
+        } else {
+            @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
+            startActivityAndCollapse(intent)
         }
     }
 
@@ -132,7 +134,7 @@ class QsTileService : TileService() {
             val sessionToken =
                 SessionToken(this@QsTileService, ComponentName(this@QsTileService, PlaybackService::class.java))
             val mediaController = MediaController.Builder(this@QsTileService, sessionToken)
-                .setConnectionHints(bundleOf("src" to "QsTileService"))
+                .setConnectionHints(bundleOf("src" to PlaybackStartSource.QS_TILE.key))
                 .setListener(object : MediaController.Listener {
                     override fun onDisconnected(controller: MediaController) {
                         super.onDisconnected(controller)

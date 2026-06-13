@@ -54,6 +54,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.Player
 import io.github.mkckr0.audio_share_app.R
 import io.github.mkckr0.audio_share_app.service.AudioPlayer
+import io.github.mkckr0.audio_share_app.service.PlaybackStartSource
+import io.github.mkckr0.audio_share_app.service.startPlayback
 import io.github.mkckr0.audio_share_app.ui.MainActivity
 import io.github.mkckr0.audio_share_app.ui.screen.HomeScreenViewModel.UiState
 import kotlinx.coroutines.launch
@@ -130,7 +132,7 @@ fun HomeScreen(viewModel: HomeScreenViewModel = viewModel()) {
                             } else {
                                 try {
                                     viewModel.saveNetWorkSettings(host, port.toInt()).join()
-                                    activity.awaitMediaController().play()
+                                    startPlayback(context, PlaybackStartSource.USER_ACTION, activity.awaitMediaController())
                                 } catch (_: NumberFormatException) {
                                     return@launch
                                 }
