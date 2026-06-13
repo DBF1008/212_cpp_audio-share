@@ -17,6 +17,7 @@
 package io.github.mkckr0.audio_share_app.service
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import io.github.mkckr0.audio_share_app.R
 import io.github.mkckr0.audio_share_app.pb.Client.AudioFormat
@@ -79,6 +80,7 @@ class NetClient(val context: Context) {
         CMD_GET_FORMAT,
         CMD_START_PLAY,
         CMD_HEARTBEAT,
+        CMD_SET_CAPABILITIES,
     }
 
     interface Callback {
@@ -141,6 +143,19 @@ class NetClient(val context: Context) {
 
             _callback?.launch {
                 log("get format success")
+            }
+
+            // Optional capability handshake. Only servers that report
+            // server_protocol_version >= 1 understand this; older servers would
+            // drop the connection on an unknown command, so we must gate it.
+            // The client already negotiated/converts locally regardless; this
+            // just lets the server log an actionable diagnostic.
+            if (audioFormat.serverProtocolVersion >= 1) {
+                val capabilities =
+                    AudioFormatNegotiator.buildPlaybackCapabilities(Build.VERSION.SDK_INT)
+                tcpWriteChannel.writeCMDWithPayload(
+                    CMD.CMD_SET_CAPABILITIES, capabilities.toByteArray()
+                )
             }
 
             // start play

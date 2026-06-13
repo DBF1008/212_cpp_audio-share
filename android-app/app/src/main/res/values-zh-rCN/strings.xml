@@ -52,4 +52,6 @@
     <string name="label_timeout">连接超时</string>
     <string name="label_unresolved_address">无法解析的地址</string>
     <string name="label_connecting">正在连接</string>
+    <string name="label_format_fallback">正在转换音频格式以便播放</string>
+    <string name="label_format_unsupported">不支持的音频格式</string>
 </resources>

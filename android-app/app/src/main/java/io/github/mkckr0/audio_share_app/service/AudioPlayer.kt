@@ -87,6 +87,10 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
     private var _audioTrack: AudioTrack? = null
     private val audioTrack get() = _audioTrack!!
 
+    // Converts incoming PCM into the negotiated playback format; identity when
+    // the source is played as-is. Set in onReceiveAudioFormat.
+    private var _converter: PcmConverter = PcmConverter.IDENTITY
+
     private var _loudnessEnhancer: LoudnessEnhancer? = null
     private val loudnessEnhancer get() = _loudnessEnhancer!!
 
@@ -189,48 +193,14 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
         }
 
         override suspend fun onReceiveAudioFormat(format: Client.AudioFormat) {
-            val encoding = when (format.encoding) {
-                Client.AudioFormat.Encoding.ENCODING_PCM_FLOAT -> AudioFormat.ENCODING_PCM_FLOAT
-                Client.AudioFormat.Encoding.ENCODING_PCM_8BIT -> AudioFormat.ENCODING_PCM_8BIT
-                Client.AudioFormat.Encoding.ENCODING_PCM_16BIT -> AudioFormat.ENCODING_PCM_16BIT
-                Client.AudioFormat.Encoding.ENCODING_PCM_24BIT -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    AudioFormat.ENCODING_PCM_24BIT_PACKED
-                } else {
-                    AudioFormat.ENCODING_INVALID
-                }
-
-                Client.AudioFormat.Encoding.ENCODING_PCM_32BIT -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    AudioFormat.ENCODING_PCM_32BIT
-                } else {
-                    AudioFormat.ENCODING_INVALID
-                }
-
-                else -> {
-                    AudioFormat.ENCODING_INVALID
-                }
-            }
-
-            val channelMask = when (format.channels) {
-                1 -> AudioFormat.CHANNEL_OUT_MONO
-                2 -> AudioFormat.CHANNEL_OUT_STEREO
-                3 -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_FRONT_CENTER
-                4 -> AudioFormat.CHANNEL_OUT_QUAD
-                5 -> AudioFormat.CHANNEL_OUT_QUAD or AudioFormat.CHANNEL_OUT_FRONT_CENTER
-                6 -> AudioFormat.CHANNEL_OUT_5POINT1
-                7 -> AudioFormat.CHANNEL_OUT_5POINT1 or AudioFormat.CHANNEL_OUT_BACK_CENTER
-                8 -> AudioFormat.CHANNEL_OUT_7POINT1_SURROUND
-                else -> AudioFormat.CHANNEL_INVALID
-            }
-
+            val sourceEncoding = format.encoding
+            val sourceChannels = format.channels
+            val sampleRate = format.sampleRate
             Log.i(
                 tag,
-                "encoding: $encoding, channelMask: $channelMask, sampleRate: ${format.sampleRate}"
+                "source format: encoding=$sourceEncoding, channels=$sourceChannels, " +
+                        "sampleRate=$sampleRate, serverProtocolVersion=${format.serverProtocolVersion}"
             )
-
-            val minBufferSize =
-                AudioTrack.getMinBufferSize(format.sampleRate, channelMask, encoding)
-
-            Log.i(tag, "min buffer size: $minBufferSize bytes")
 
             val audioConfig = context.audioConfigDataStore.data.first()
 
@@ -240,23 +210,56 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                 )).toInt()
             Log.i(tag, "buffer scale: $bufferScale")
 
-            _audioTrack = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
+            // Layer 1: negotiate a format the device should be able to play
+            // (down-converts unsupported bit depths, downmixes invalid layouts).
+            val negotiated = try {
+                AudioFormatNegotiator.negotiate(
+                    sourceEncoding, sourceChannels, sampleRate, Build.VERSION.SDK_INT
                 )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(encoding)
-                        .setChannelMask(channelMask)
-                        .setSampleRate(format.sampleRate)
-                        .build()
-                )
-                .setBufferSizeInBytes(minBufferSize * bufferScale)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            } catch (e: AudioFormatNegotiator.UnsupportedFormatException) {
+                Log.w(tag, "format negotiation failed: ${e.message}")
+                null
+            }
+
+            var active: AudioFormatNegotiator.Result? = null
+            if (negotiated != null) {
+                try {
+                    _audioTrack = buildAudioTrack(negotiated.playback, bufferScale)
+                    active = negotiated
+                } catch (e: Exception) {
+                    Log.w(
+                        tag,
+                        "building negotiated AudioTrack failed for ${negotiated.playback}: ${e.message}"
+                    )
+                }
+            }
+
+            // Layer 2: a guaranteed-safe 16-bit/stereo fallback for device quirks
+            // the pure negotiator cannot detect (e.g. a channel mask the device
+            // rejects, surfaced as getMinBufferSize() error).
+            if (active == null) {
+                val fallback =
+                    AudioFormatNegotiator.safeFallback(sourceEncoding, sourceChannels, sampleRate)
+                try {
+                    _audioTrack = buildAudioTrack(fallback.playback, bufferScale)
+                } catch (e: Exception) {
+                    Log.e(
+                        tag,
+                        "even the safe fallback AudioTrack failed for ${fallback.playback}: ${e.message}"
+                    )
+                    onError(context.getString(R.string.label_format_unsupported), e)
+                    return
+                }
+                active = fallback
+            }
+
+            _converter = active.converter
+            if (active.converted) {
+                Log.i(tag, "playing with format conversion -> ${active.playback}")
+                message = context.getString(R.string.label_format_fallback)
+            } else {
+                Log.i(tag, "playing source format natively -> ${active.playback}")
+            }
 
             val volume = audioConfig[floatPreferencesKey(AudioConfigKeys.VOLUME)]
                 ?: context.getFloat(R.string.default_volume)
@@ -287,7 +290,8 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
 
         override suspend fun onReceiveAudioData(audioData: ByteBuffer) {
 //            Log.d(tag, "${audioData.remaining()}")
-            audioTrack.write(audioData, audioData.remaining(), AudioTrack.WRITE_NON_BLOCKING)
+            val out = _converter.convert(audioData)
+            audioTrack.write(out, out.remaining(), AudioTrack.WRITE_NON_BLOCKING)
         }
 
         override suspend fun onError(message: String?, cause: Throwable?) {
@@ -322,6 +326,42 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                 )
             }
         }
+    }
+
+    /**
+     * Builds an [AudioTrack] for the given negotiated [playback] format. Throws if
+     * the device cannot provide a buffer for it (e.g. an unsupported channel mask
+     * or sample rate, surfaced as a non-positive getMinBufferSize), so the caller
+     * can fall back to a safer configuration.
+     */
+    private fun buildAudioTrack(
+        playback: AudioFormatNegotiator.PlaybackFormat,
+        bufferScale: Int,
+    ): AudioTrack {
+        val minBufferSize = AudioTrack.getMinBufferSize(
+            playback.sampleRate, playback.channelMask, playback.encoding
+        )
+        if (minBufferSize <= 0) {
+            throw IllegalStateException("getMinBufferSize returned $minBufferSize for $playback")
+        }
+        Log.i(tag, "min buffer size: $minBufferSize bytes for $playback")
+        return AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(playback.encoding)
+                    .setChannelMask(playback.channelMask)
+                    .setSampleRate(playback.sampleRate)
+                    .build()
+            )
+            .setBufferSizeInBytes(minBufferSize * bufferScale)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
     }
 
     /**

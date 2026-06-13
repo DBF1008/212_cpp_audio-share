@@ -17,6 +17,7 @@
 #include "network_manager.hpp"
 #include "formatter.hpp"
 #include "audio_manager.hpp"
+#include "audio_compat.hpp"
 
 #include <list>
 #include <ranges>
@@ -254,6 +255,50 @@ asio::awaitable<void> network_manager::read_loop(std::shared_ptr<tcp_socket> pee
             if (it != _playing_peer_list.end()) {
                 it->second->last_tick = std::chrono::steady_clock::now();
             }
+        } else if (cmd == cmd_t::cmd_set_capabilities) {
+            // Optional and backward-compatible: the client reports what it can
+            // play so we can log an actionable diagnostic for the operator. The
+            // shared capture stream is never transcoded per-client; the client
+            // performs its own format fallback and PCM conversion.
+            uint32_t size = 0;
+            auto [ec_sz, n_sz] = co_await asio::async_read(*peer, asio::buffer(&size, sizeof(size)));
+            if (ec_sz) {
+                close_session(peer);
+                spdlog::trace("{} {}", __func__, ec_sz);
+                break;
+            }
+            if (size > 64 * 1024) {
+                spdlog::error("{} capabilities payload too large: {}", __func__, size);
+                close_session(peer);
+                break;
+            }
+            std::vector<char> payload(size);
+            if (size > 0) {
+                auto [ec_pl, n_pl] = co_await asio::async_read(*peer, asio::buffer(payload));
+                if (ec_pl) {
+                    close_session(peer);
+                    spdlog::trace("{} {}", __func__, ec_pl);
+                    break;
+                }
+            }
+            io::github::mkckr0::audio_share_app::pb::PlaybackCapabilities caps_msg;
+            if (!caps_msg.ParseFromArray(payload.data(), (int)payload.size())) {
+                spdlog::warn("{} failed to parse PlaybackCapabilities", __func__);
+                continue; // non-fatal: keep the connection alive
+            }
+
+            audio_compat::capabilities caps;
+            for (int i = 0; i < caps_msg.supported_encodings_size(); ++i) {
+                caps.supported_encodings.push_back(
+                    static_cast<audio_compat::encoding>((int)caps_msg.supported_encodings(i)));
+            }
+            caps.max_channels = caps_msg.max_channels();
+            caps.max_sample_rate = caps_msg.max_sample_rate();
+
+            auto fmt = _audio_manager->get_format();
+            auto src = static_cast<audio_compat::encoding>((int)fmt.encoding());
+            spdlog::info("client {} {}", peer->remote_endpoint(),
+                audio_compat::make_diagnostic(src, fmt.channels(), fmt.sample_rate(), caps));
         } else {
             spdlog::error("{} error cmd", __func__);
             close_session(peer);

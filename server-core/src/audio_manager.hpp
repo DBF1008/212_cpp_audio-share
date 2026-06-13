@@ -38,6 +38,12 @@ public:
     using endpoint_list_t = std::vector<std::pair<std::string, std::string>>;
     using AudioFormat = io::github::mkckr0::audio_share_app::pb::AudioFormat;
 
+    // Backward-compatible protocol/transport feature version reported to clients
+    // via AudioFormat.server_protocol_version. Bump when the server gains a new
+    // capability that a client can detect from that field. >= 1 means the server
+    // accepts PlaybackCapabilities (CMD_SET_CAPABILITIES).
+    static constexpr int kProtocolVersion = 1;
+
     enum class encoding_t {
         encoding_default = 0,
         encoding_invalid = 1,
@@ -84,6 +90,10 @@ public:
     void do_loopback_recording(std::shared_ptr<network_manager> network_manager, const capture_config& config);
 
     std::string get_format_binary();
+
+    // A snapshot copy of the current capture format, used for logging/diagnostics
+    // (e.g. comparing against a client's reported PlaybackCapabilities).
+    AudioFormat get_format() const;
 
     endpoint_list_t get_endpoint_list();
 

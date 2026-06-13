@@ -33,12 +33,25 @@ import io.ktor.utils.io.writePacket
 import kotlinx.io.Buffer
 import kotlinx.io.readByteArray
 import kotlinx.io.readIntLe
+import kotlinx.io.write
 import kotlinx.io.writeIntLe
 import java.nio.ByteBuffer
 
 suspend fun ByteWriteChannel.writeCMD(cmd: CMD) {
     writePacket(Buffer().apply {
         writeIntLe(cmd.ordinal)
+    }.build())
+    flush()
+}
+
+// Writes a command followed by a length-prefixed payload (cmd, size, bytes),
+// the same framing the server uses for the format response. Used for
+// CMD_SET_CAPABILITIES.
+suspend fun ByteWriteChannel.writeCMDWithPayload(cmd: CMD, payload: ByteArray) {
+    writePacket(Buffer().apply {
+        writeIntLe(cmd.ordinal)
+        writeIntLe(payload.size)
+        write(payload)
     }.build())
     flush()
 }

@@ -49,6 +49,7 @@ class network_manager : public std::enable_shared_from_this<network_manager>
         cmd_get_format = 1,
         cmd_start_play = 2,
         cmd_heartbeat = 3,
+        cmd_set_capabilities = 4, // optional, client -> server; payload: size + PlaybackCapabilities
     };
 
 public:

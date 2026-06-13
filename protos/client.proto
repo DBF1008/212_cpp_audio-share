@@ -32,4 +32,30 @@ message AudioFormat
 	Encoding encoding = 1;
 	int32 channels = 2;
 	int32 sample_rate = 3;
+
+	// Protocol/transport feature version reported by the server.
+	// 0 or absent means a legacy server that only sends the capture format
+	// one-way. >= 1 means the server understands PlaybackCapabilities sent by
+	// the client (see CMD_SET_CAPABILITIES in docs/protocol.md). Added in a
+	// backward-compatible way: old clients ignore this field, old servers leave
+	// it at 0.
+	int32 server_protocol_version = 4;
+}
+
+// Sent by the client to the server (CMD_SET_CAPABILITIES) so the server can
+// report whether its capture format is something the client can play natively.
+// This makes the format exchange bidirectional without changing the existing
+// GET_FORMAT / START_PLAY flow. The client still performs the authoritative
+// fallback and PCM conversion locally; the server only uses these capabilities
+// for logging/diagnostics (e.g. recommending a capture --encoding).
+message PlaybackCapabilities
+{
+	// Encodings the client can feed to AudioTrack on this device/OS version.
+	repeated AudioFormat.Encoding supported_encodings = 1;
+
+	// Maximum number of channels the client can render (after its own downmix).
+	int32 max_channels = 2;
+
+	// Maximum PCM sample rate (Hz) the client can render.
+	int32 max_sample_rate = 3;
 }

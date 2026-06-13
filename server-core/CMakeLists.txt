@@ -60,3 +60,11 @@ if(${PLATFORM_NAME} STREQUAL "linux")
 endif()
 
 install(TARGETS server-cmd)
+
+# Standalone, dependency-free regression test for src/audio_compat.hpp
+# (no protobuf/asio/platform deps). Run with: ctest --output-on-failure
+enable_testing()
+add_executable(audio_compat_test test/audio_compat_test.cpp)
+target_include_directories(audio_compat_test PRIVATE src)
+target_compile_features(audio_compat_test PRIVATE cxx_std_20)
+add_test(NAME audio_compat_test COMMAND audio_compat_test)

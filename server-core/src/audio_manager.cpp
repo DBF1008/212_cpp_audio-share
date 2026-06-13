@@ -23,5 +23,14 @@ void audio_manager::stop()
 
 std::string audio_manager::get_format_binary()
 {
+    // Advertise the server's protocol capability so a new client can decide
+    // (backward-compatibly) whether to send its PlaybackCapabilities. Old
+    // clients ignore this field.
+    _format->set_server_protocol_version(kProtocolVersion);
     return _format->SerializeAsString();
+}
+
+audio_manager::AudioFormat audio_manager::get_format() const
+{
+    return _format ? *_format : AudioFormat {};
 }
