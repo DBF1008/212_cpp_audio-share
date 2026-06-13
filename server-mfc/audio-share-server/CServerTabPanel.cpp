@@ -7,6 +7,29 @@
 #include "audio_manager.hpp"
 #include "network_manager.hpp"
 #include "AudioShareServer.h"
+#include "capture_settings.hpp"
+
+namespace {
+
+// Adapts CWinApp's profile API to capture_settings::profile_io so the endpoint
+// and encoding restore/heal logic stays in one MFC-free, unit-tested place.
+struct app_profile_io : capture_settings::profile_io
+{
+    std::wstring get_string(const wchar_t* section, const wchar_t* key, const wchar_t* def) override {
+        return theApp.GetProfileStringW(section, key, def).GetString();
+    }
+    int get_int(const wchar_t* section, const wchar_t* key, int def) override {
+        return theApp.GetProfileIntW(section, key, def);
+    }
+    void write_string(const wchar_t* section, const wchar_t* key, const wchar_t* value) override {
+        theApp.WriteProfileStringW(section, key, value);
+    }
+    void write_int(const wchar_t* section, const wchar_t* key, int value) override {
+        theApp.WriteProfileInt(section, key, value);
+    }
+};
+
+} // namespace
 
 // CServerTabPanel dialog
 
@@ -107,25 +130,30 @@ void CServerTabPanel::OnBnClickedButtonReset()
         }
         m_comboBoxAudioEndpoint.ResetContent();
 
+        std::vector<std::wstring> endpoint_ids;
         auto nDefaultIndex = m_comboBoxAudioEndpoint.AddString(defaultString);
-        m_comboBoxAudioEndpoint.SetItemDataPtr(nDefaultIndex, _wcsdup(L"default"));
-        
+        m_comboBoxAudioEndpoint.SetItemDataPtr(nDefaultIndex, _wcsdup(capture_settings::kDefaultEndpoint));
+        endpoint_ids.push_back(capture_settings::kDefaultEndpoint);
+
         audio_manager::endpoint_list_t endpoint_list = m_audio_manager->get_endpoint_list();
         for (auto&& [id, name] : endpoint_list) {
+            std::wstring endpoint_id = mbs_to_wchars(id);
             int nIndex = m_comboBoxAudioEndpoint.AddString(mbs_to_wchars(name).c_str());
-            m_comboBoxAudioEndpoint.SetItemDataPtr(nIndex, _wcsdup(mbs_to_wchars(id).c_str()));
+            m_comboBoxAudioEndpoint.SetItemDataPtr(nIndex, _wcsdup(endpoint_id.c_str()));
+            endpoint_ids.push_back(endpoint_id);
         }
 
-        auto configEndpoint = theApp.GetProfileStringW(L"Capture", L"endpoint", L"default");
+        // Restore the saved endpoint, healing a stale value back to "default".
+        app_profile_io profile;
+        std::wstring selectedEndpoint = capture_settings::restore_endpoint(profile, endpoint_ids);
         for (int nIndex = 0; nIndex < m_comboBoxAudioEndpoint.GetCount(); ++nIndex) {
-            if (configEndpoint == (LPCWSTR)m_comboBoxAudioEndpoint.GetItemDataPtr(nIndex)) {
+            if (selectedEndpoint == (LPCWSTR)m_comboBoxAudioEndpoint.GetItemDataPtr(nIndex)) {
                 m_comboBoxAudioEndpoint.SetCurSel(nIndex);
                 break;
             }
         }
         if (m_comboBoxAudioEndpoint.GetCurSel() == CB_ERR) {
-            // selected endpoint is not in list, no selected
-            theApp.WriteProfileStringW(L"Capture", L"endpoint", L"default");
+            // resolved endpoint is not in the list; fall back to default
             m_comboBoxAudioEndpoint.SetCurSel(nDefaultIndex);
         }
     }
@@ -142,21 +170,24 @@ void CServerTabPanel::OnBnClickedButtonReset()
             { encoding_t::encoding_s24, L"24 bit integer PCM" },
             { encoding_t::encoding_s32, L"32 bit integer PCM" },
         };
+        std::vector<int> encodings;
         for (auto&& [encoding, name] : array) {
             auto nIndex = m_comboEncoding.AddString(name.c_str());
             m_comboEncoding.SetItemData(nIndex, (int)encoding);
+            encodings.push_back((int)encoding);
         }
-        
-        // select
-        auto configEncoding = (encoding_t)theApp.GetProfileIntW(L"Capture", L"encoding", (int)encoding_t::encoding_default);
+
+        // Restore the saved encoding, healing an unselectable value back to
+        // default. This writes the encoding key only; it must not touch endpoint.
+        app_profile_io profile;
+        int selectedEncoding = capture_settings::restore_encoding(profile, encodings, (int)encoding_t::encoding_default);
         for (int nIndex = 0; nIndex < m_comboEncoding.GetCount(); ++nIndex) {
-            if (configEncoding == (encoding_t)m_comboEncoding.GetItemData(nIndex)) {
+            if (selectedEncoding == (int)m_comboEncoding.GetItemData(nIndex)) {
                 m_comboEncoding.SetCurSel(nIndex);
                 break;
             }
         }
         if (m_comboEncoding.GetCurSel() == CB_ERR) {
-            theApp.WriteProfileInt(L"Capture", L"endpoint", (int)encoding_t::encoding_default);
             m_comboEncoding.SetCurSel(0);
         }
     }
@@ -214,8 +245,8 @@ void CServerTabPanel::OnBnClickedStartServer()
         m_buttonServer.SetFocus();
         theApp.WriteProfileStringW(L"Network", L"host", host_str);
         theApp.WriteProfileStringW(L"Network", L"port", port_str);
-        theApp.WriteProfileStringW(L"Capture", L"endpoint", mbs_to_wchars(config.endpoint_id).c_str());
-        theApp.WriteProfileInt(L"Capture", L"encoding", (int)config.encoding);
+        theApp.WriteProfileStringW(capture_settings::kSection, capture_settings::kEndpointKey, mbs_to_wchars(config.endpoint_id).c_str());
+        theApp.WriteProfileInt(capture_settings::kSection, capture_settings::kEncodingKey, (int)config.encoding);
         theApp.WriteProfileInt(L"App", L"Running", true);
         m_bStarted = true;
     }

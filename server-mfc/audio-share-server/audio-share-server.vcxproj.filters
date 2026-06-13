@@ -74,6 +74,9 @@
     <ClInclude Include="CAboutDialog.h">
       <Filter>mfc</Filter>
     </ClInclude>
+    <ClInclude Include="capture_settings.hpp">
+      <Filter>mfc</Filter>
+    </ClInclude>
     <ClInclude Include="util.hpp">
       <Filter>mfc</Filter>
     </ClInclude>
