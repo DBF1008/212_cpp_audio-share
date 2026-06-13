@@ -84,11 +84,18 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
 
     private val netClient = NetClient(context.applicationContext)
 
-    private var _audioTrack: AudioTrack? = null
-    private val audioTrack get() = _audioTrack!!
-
-    private var _loudnessEnhancer: LoudnessEnhancer? = null
-    private val loudnessEnhancer get() = _loudnessEnhancer!!
+    // Single owner for the native audio resources. Every teardown path goes
+    // through these slots (via releaseAudio) so reconnect / new-format / stop /
+    // pause / release share one idempotent lifecycle and can never leak an
+    // AudioTrack or LoudnessEnhancer or mix in a stale audio session.
+    private val audioTrackSlot = ResourceSlot<AudioTrack> {
+        it.pause()
+        it.flush()
+        it.release()
+    }
+    private val loudnessEnhancerSlot = ResourceSlot<LoudnessEnhancer> {
+        it.release()
+    }
 
     private val scope: CoroutineScope = MainScope()
     private val retryScope: CoroutineScope = MainScope()
@@ -142,6 +149,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                     .build()
                 netClient.stop()
                 retryScope.coroutineContext.cancelChildren()
+                releaseAudio()
                 message = context.getString(R.string.label_paused)
             }
         }
@@ -155,6 +163,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             .build()
         netClient.stop()
         retryScope.coroutineContext.cancelChildren()
+        releaseAudio()
         message = context.getString(R.string.label_stopped)
         return immediateVoidFuture()
     }
@@ -164,18 +173,20 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
         scope.cancel()
         netClient.stop()
         retryScope.cancel()
-        _loudnessEnhancer?.run {
-            release()
-        }
-        _loudnessEnhancer = null
-        _audioTrack?.run {
-            pause()
-            flush()
-            release()
-        }
-        _audioTrack = null
+        releaseAudio()
         _state = State.Builder().build()
         return immediateVoidFuture()
+    }
+
+    /**
+     * Release the current [AudioTrack] and [LoudnessEnhancer], if any. The
+     * single place audio resources are torn down; safe to call from any
+     * teardown path and safe to call repeatedly.
+     */
+    private fun releaseAudio() {
+        // Enhancer first: it is attached to the track's audio session.
+        loudnessEnhancerSlot.clear()
+        audioTrackSlot.clear()
     }
 
     inner class NetClientCallBack : NetClient.Callback {
@@ -189,6 +200,10 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
         }
 
         override suspend fun onReceiveAudioFormat(format: Client.AudioFormat) {
+            // Reset any audio session left over from a previous (re)connection
+            // before building a new one, so reconnects start single-owner clean.
+            releaseAudio()
+
             val encoding = when (format.encoding) {
                 Client.AudioFormat.Encoding.ENCODING_PCM_FLOAT -> AudioFormat.ENCODING_PCM_FLOAT
                 Client.AudioFormat.Encoding.ENCODING_PCM_8BIT -> AudioFormat.ENCODING_PCM_8BIT
@@ -240,7 +255,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                 )).toInt()
             Log.i(tag, "buffer scale: $bufferScale")
 
-            _audioTrack = AudioTrack.Builder()
+            val audioTrack = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -257,6 +272,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                 .setBufferSizeInBytes(minBufferSize * bufferScale)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
+            audioTrackSlot.set(audioTrack)
 
             val volume = audioConfig[floatPreferencesKey(AudioConfigKeys.VOLUME)]
                 ?: context.getFloat(R.string.default_volume)
@@ -268,9 +284,10 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                     ?: context.getFloat(R.string.default_loudness_enhancer)).toInt()
             Log.i(tag, "loudness enhancer: ${loudnessEnhancerGain}mB")
             if (loudnessEnhancerGain > 0) {
-                _loudnessEnhancer = LoudnessEnhancer(audioTrack.audioSessionId)
+                val loudnessEnhancer = LoudnessEnhancer(audioTrack.audioSessionId)
                 loudnessEnhancer.setTargetGain(loudnessEnhancerGain)
                 loudnessEnhancer.setEnabled(true)
+                loudnessEnhancerSlot.set(loudnessEnhancer)
             }
 
             audioTrack.play()
@@ -287,7 +304,7 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
 
         override suspend fun onReceiveAudioData(audioData: ByteBuffer) {
 //            Log.d(tag, "${audioData.remaining()}")
-            audioTrack.write(audioData, audioData.remaining(), AudioTrack.WRITE_NON_BLOCKING)
+            audioTrackSlot.value?.write(audioData, audioData.remaining(), AudioTrack.WRITE_NON_BLOCKING)
         }
 
         override suspend fun onError(message: String?, cause: Throwable?) {
@@ -295,6 +312,9 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
             retryScope.launch {
 
                 netClient.stop()
+                // Free the failed connection's audio session before reconnecting
+                // so the next onReceiveAudioFormat() starts from a clean slate.
+                releaseAudio()
 
                 val reason = message ?: cause?.stackTraceToString()
                 var wait = 3
