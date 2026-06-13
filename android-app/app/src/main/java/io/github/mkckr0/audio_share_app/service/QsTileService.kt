@@ -33,7 +33,6 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
 import androidx.media3.session.SessionToken
-import io.github.mkckr0.audio_share_app.model.canStartForegroundService
 import io.github.mkckr0.audio_share_app.service.PlaybackService.Companion.ACTION_STOP_SERVICE
 import io.github.mkckr0.audio_share_app.ui.MainActivity
 import kotlinx.coroutines.MainScope
@@ -87,29 +86,31 @@ class QsTileService : TileService() {
         super.onClick()
         withMediaController {
             if (playWhenReady) {
+                // Stop playback
                 sendCustomCommand(SessionCommand(ACTION_STOP_SERVICE, Bundle.EMPTY), Bundle.EMPTY)
                 delay(1.seconds)
             } else {
-                if (applicationContext.canStartForegroundService()) {
-                    play()
-                    delay(1.seconds)
-                } else {
-                    Log.d(tag, "can't start foreground service")
-                    val intent = Intent(
-                        applicationContext,
-                        MainActivity::class.java
-                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        val pendingIntent = PendingIntent.getActivity(
-                            applicationContext,
-                            0,
-                            intent,
-                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                        )
-                        startActivityAndCollapse(pendingIntent)
-                    } else {
-                        @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
-                        startActivityAndCollapse(intent)
+                // Start playback via coordinator
+                scope.launch {
+                    val result = PlaybackCoordinator.startPlayback(
+                        context = this@QsTileService,
+                        source = PlaybackCoordinator.StartSource.QS_TILE,
+                        callback = object : PlaybackCoordinator.ResultCallback {
+                            override fun onResult(result: PlaybackCoordinator.StartResult) {
+                                Log.d(tag, "Playback start result: $result")
+                            }
+                        }
+                    )
+
+                    when (result) {
+                        is PlaybackCoordinator.StartResult.Success -> {
+                            Log.d(tag, "Playback started successfully from QS tile")
+                            delay(1.seconds)
+                        }
+                        is PlaybackCoordinator.StartResult.Failure -> {
+                            Log.w(tag, "Failed to start playback: ${result.reason}")
+                            handleStartFailure(result.reason)
+                        }
                     }
                 }
             }
@@ -124,6 +125,53 @@ class QsTileService : TileService() {
                 subtitle = if (state == Tile.STATE_ACTIVE) "On" else "Off"
             }
         }.updateTile()
+    }
+
+    /**
+     * Handles playback start failures by providing appropriate user feedback.
+     *
+     * @param reason The reason for the failure
+     */
+    private fun handleStartFailure(reason: PlaybackCoordinator.FailureReason) {
+        when (reason) {
+            PlaybackCoordinator.FailureReason.SYSTEM_RESTRICTION -> {
+                Log.w(tag, "System restriction prevents foreground service start")
+                // Open MainActivity to allow user to start playback from foreground
+                openMainActivity()
+            }
+            PlaybackCoordinator.FailureReason.CONTROLLER_ERROR -> {
+                Log.e(tag, "Failed to create MediaController")
+                // Keep tile in inactive state, user can retry
+            }
+            PlaybackCoordinator.FailureReason.PLAYBACK_ERROR -> {
+                Log.e(tag, "Failed to start playback")
+                // Keep tile in inactive state, user can retry
+            }
+            PlaybackCoordinator.FailureReason.CANCELLED -> {
+                Log.d(tag, "Playback start was cancelled")
+            }
+        }
+    }
+
+    /**
+     * Opens MainActivity to allow user to start playback from foreground context.
+     */
+    private fun openMainActivity() {
+        val intent = Intent(applicationContext, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val pendingIntent = PendingIntent.getActivity(
+                applicationContext,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            startActivityAndCollapse(pendingIntent)
+        } else {
+            @Suppress("DEPRECATION", "StartActivityAndCollapseDeprecated")
+            startActivityAndCollapse(intent)
+        }
     }
 
     @OptIn(UnstableApi::class)

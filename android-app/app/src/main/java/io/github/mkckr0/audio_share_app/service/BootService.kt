@@ -17,24 +17,17 @@
 package io.github.mkckr0.audio_share_app.service
 
 import android.app.Service
-import android.content.ComponentName
 import android.content.Intent
 import android.os.IBinder
 import android.util.Log
-import androidx.core.os.bundleOf
 import androidx.datastore.preferences.core.booleanPreferencesKey
-import androidx.media3.session.MediaController
-import androidx.media3.session.SessionToken
 import io.github.mkckr0.audio_share_app.R
 import io.github.mkckr0.audio_share_app.model.AppSettingsKeys
 import io.github.mkckr0.audio_share_app.model.appSettingsDataStore
 import io.github.mkckr0.audio_share_app.model.getBoolean
 import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.seconds
 
 class BootService : Service() {
 
@@ -57,14 +50,24 @@ class BootService : Service() {
             val autoStart = appSettings[booleanPreferencesKey(AppSettingsKeys.START_PLAYBACK_WHEN_SYSTEM_BOOT)] ?: getBoolean(R.bool.default_start_playback_when_system_boot)
 
             if (autoStart) {
-                val sessionToken =
-                    SessionToken(this@BootService, ComponentName(this@BootService, PlaybackService::class.java))
-                val mediaController = MediaController.Builder(this@BootService, sessionToken)
-                    .setConnectionHints(bundleOf("src" to "BootService"))
-                    .buildAsync().await()
-                mediaController.play()
-                delay(3.seconds)
-                mediaController.release()
+                Log.d(tag, "Auto-start enabled, starting playback via coordinator")
+                val result = PlaybackCoordinator.startPlayback(
+                    context = this@BootService,
+                    source = PlaybackCoordinator.StartSource.BOOT
+                )
+
+                when (result) {
+                    is PlaybackCoordinator.StartResult.Success -> {
+                        Log.d(tag, "Playback started successfully from boot")
+                    }
+                    is PlaybackCoordinator.StartResult.Failure -> {
+                        Log.w(tag, "Failed to start playback from boot: ${result.reason}")
+                        // Log the failure reason for diagnostics
+                        // In the future, we could persist this to a diagnostics log
+                    }
+                }
+            } else {
+                Log.d(tag, "Auto-start disabled, skipping playback")
             }
 
             stopSelf()
