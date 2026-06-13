@@ -156,7 +156,7 @@ void CServerTabPanel::OnBnClickedButtonReset()
             }
         }
         if (m_comboEncoding.GetCurSel() == CB_ERR) {
-            theApp.WriteProfileInt(L"Capture", L"endpoint", (int)encoding_t::encoding_default);
+            theApp.WriteProfileInt(L"Capture", L"encoding", (int)encoding_t::encoding_default);
             m_comboEncoding.SetCurSel(0);
         }
     }
