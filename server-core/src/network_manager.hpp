@@ -21,12 +21,14 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <atomic>
 
 #include "pre_asio.hpp"
 #include <asio.hpp>
 #include <asio/use_awaitable.hpp>
 
 #include "audio_manager.hpp"
+#include "client.pb.h"
 
 class network_manager : public std::enable_shared_from_this<network_manager>
 {
@@ -49,6 +51,7 @@ class network_manager : public std::enable_shared_from_this<network_manager>
         cmd_get_format = 1,
         cmd_start_play = 2,
         cmd_heartbeat = 3,
+        cmd_negotiate_format = 4,
     };
 
 public:
@@ -88,6 +91,12 @@ private:
     std::unique_ptr<udp_socket> _udp_server;
     playing_peer_list_t _playing_peer_list;
     constexpr static auto _heartbeat_timeout = std::chrono::seconds(5);
+
+    // Format conversion state (set by CMD_NEGOTIATE_FORMAT, read by broadcast_audio_data)
+    std::atomic<bool> _convert_enabled { false };
+    std::atomic<int> _convert_block_align { 0 };
+    io::github::mkckr0::audio_share_app::pb::AudioFormat _convert_target_format;
+    std::vector<uint8_t> _convert_buffer;
 };
 
 #endif // !NETWORK_MANAGER_HPP

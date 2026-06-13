@@ -17,6 +17,7 @@
 #include "network_manager.hpp"
 #include "formatter.hpp"
 #include "audio_manager.hpp"
+#include "pcm_converter.hpp"
 
 #include <list>
 #include <ranges>
@@ -188,6 +189,8 @@ void network_manager::stop_server()
     _net_thread.join();
     _audio_manager->stop();
     _playing_peer_list.clear();
+    _convert_enabled.store(false, std::memory_order_release);
+    _convert_buffer.clear();
     _udp_server = nullptr;
     _ioc = nullptr;
     spdlog::info("server stopped");
@@ -228,6 +231,86 @@ asio::awaitable<void> network_manager::read_loop(std::shared_ptr<tcp_socket> pee
             if (ec) {
                 close_session(peer);
                 spdlog::trace("{} {}", __func__, ec);
+                break;
+            }
+        } else if (cmd == cmd_t::cmd_negotiate_format) {
+            // Read FormatConstraints: size(4) + protobuf data
+            uint32_t constraints_size = 0;
+            auto [ec1, _1] = co_await asio::async_read(*peer, asio::buffer(&constraints_size, sizeof(constraints_size)));
+            if (ec1) {
+                close_session(peer);
+                spdlog::trace("{} {}", __func__, ec1);
+                break;
+            }
+            std::vector<uint8_t> constraints_buf(constraints_size);
+            auto [ec2, _2] = co_await asio::async_read(*peer, asio::buffer(constraints_buf.data(), constraints_size));
+            if (ec2) {
+                close_session(peer);
+                spdlog::trace("{} {}", __func__, ec2);
+                break;
+            }
+
+            io::github::mkckr0::audio_share_app::pb::FormatConstraints constraints;
+            if (!constraints.ParseFromArray(constraints_buf.data(), constraints_size)) {
+                spdlog::error("failed to parse FormatConstraints");
+                close_session(peer);
+                break;
+            }
+
+            spdlog::info("negotiate request: {}", constraints.DebugString());
+
+            // Get current capture format
+            auto format_binary = _audio_manager->get_format_binary();
+            io::github::mkckr0::audio_share_app::pb::AudioFormat source_format;
+            source_format.ParseFromString(format_binary);
+
+            // Compute compatible format
+            io::github::mkckr0::audio_share_app::pb::AudioFormat target_format;
+            bool needs_conversion = false;
+
+            if (pcm_converter::compute_compatible_format(source_format, constraints, target_format)) {
+                needs_conversion = (target_format.encoding() != source_format.encoding())
+                                || (target_format.channels() != source_format.channels());
+            }
+
+            using NegotiateResponse = io::github::mkckr0::audio_share_app::pb::NegotiateResponse;
+            NegotiateResponse response;
+
+            if (needs_conversion) {
+                if (!pcm_converter::can_convert(source_format.encoding(), source_format.channels(),
+                                               target_format.encoding(), target_format.channels())) {
+                    spdlog::error("cannot convert {} -> {}", source_format.DebugString(), target_format.DebugString());
+                    response.set_status(NegotiateResponse::FAILED);
+                    *response.mutable_format() = source_format;
+                } else {
+                    _convert_target_format = target_format;
+                    int new_block_align = pcm_converter::compute_block_align(
+                        target_format.encoding(), target_format.channels());
+                    _convert_block_align.store(new_block_align, std::memory_order_release);
+                    _convert_enabled.store(true, std::memory_order_release);
+                    response.set_status(NegotiateResponse::SUCCESS);
+                    *response.mutable_format() = target_format;
+                    spdlog::info("negotiated format: {} -> {}", source_format.DebugString(), target_format.DebugString());
+                }
+            } else {
+                _convert_enabled.store(false, std::memory_order_release);
+                response.set_status(NegotiateResponse::SUCCESS);
+                *response.mutable_format() = source_format;
+                spdlog::info("original format is compatible, no conversion needed");
+            }
+
+            auto response_binary = response.SerializeAsString();
+            auto response_size = (uint32_t)response_binary.size();
+            cmd = cmd_t::cmd_negotiate_format;
+            std::array<asio::const_buffer, 3> buffers = {
+                asio::buffer(&cmd, sizeof(cmd)),
+                asio::buffer(&response_size, sizeof(response_size)),
+                asio::buffer(response_binary),
+            };
+            auto [ec3, _3] = co_await asio::async_write(*peer, buffers);
+            if (ec3) {
+                close_session(peer);
+                spdlog::trace("{} {}", __func__, ec3);
                 break;
             }
         } else if (cmd == cmd_t::cmd_start_play) {
@@ -400,14 +483,48 @@ void network_manager::broadcast_audio_data(const char* data, size_t count, int b
     }
     // spdlog::trace("broadcast_audio_data count: {}", count);
 
+    bool convert = _convert_enabled.load(std::memory_order_acquire);
+    int effective_block_align = block_align;
+    std::vector<uint8_t> converted_data;
+
+    if (convert) {
+        int new_ba = _convert_block_align.load(std::memory_order_acquire);
+        if (new_ba > 0 && block_align > 0) {
+            size_t num_frames = count / block_align;
+            size_t output_size = num_frames * new_ba;
+            converted_data.resize(output_size);
+
+            auto format_binary = _audio_manager->get_format_binary();
+            io::github::mkckr0::audio_share_app::pb::AudioFormat src_fmt;
+            src_fmt.ParseFromString(format_binary);
+
+            size_t written = pcm_converter::convert(
+                (const uint8_t*)data, count,
+                src_fmt.encoding(), src_fmt.channels(),
+                _convert_target_format.encoding(), _convert_target_format.channels(),
+                converted_data.data(), output_size);
+
+            if (written > 0) {
+                data = (const char*)converted_data.data();
+                count = written;
+                effective_block_align = new_ba;
+            } else {
+                spdlog::error("pcm conversion failed, sending original data");
+                convert = false;
+            }
+        } else {
+            convert = false;
+        }
+    }
+
     // divide udp frame
     constexpr int mtu = 1492;
     int max_seg_size = mtu - 20 - 8;
-    max_seg_size -= max_seg_size % block_align; // one single sample can't be divided
+    max_seg_size -= max_seg_size % effective_block_align; // one single sample can't be divided
 
     std::list<std::shared_ptr<std::vector<uint8_t>>> seg_list;
 
-    for (int begin_pos = 0; begin_pos < count;) {
+    for (int begin_pos = 0; begin_pos < (int)count;) {
         const int real_seg_size = std::min((int)count - begin_pos, max_seg_size);
         auto seg = std::make_shared<std::vector<uint8_t>>(real_seg_size);
         std::copy((const uint8_t*)data + begin_pos, (const uint8_t*)data + begin_pos + real_seg_size, seg->begin());

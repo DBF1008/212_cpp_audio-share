@@ -189,6 +189,9 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
         }
 
         override suspend fun onReceiveAudioFormat(format: Client.AudioFormat) {
+            // Map proto encoding to Android AudioFormat encoding.
+            // If the encoding is not supported on this API level, fall back to
+            // ENCODING_PCM_16BIT (universally supported) as a safety net.
             val encoding = when (format.encoding) {
                 Client.AudioFormat.Encoding.ENCODING_PCM_FLOAT -> AudioFormat.ENCODING_PCM_FLOAT
                 Client.AudioFormat.Encoding.ENCODING_PCM_8BIT -> AudioFormat.ENCODING_PCM_8BIT
@@ -196,17 +199,20 @@ class AudioPlayer(val context: Context) : SimpleBasePlayer(Looper.getMainLooper(
                 Client.AudioFormat.Encoding.ENCODING_PCM_24BIT -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     AudioFormat.ENCODING_PCM_24BIT_PACKED
                 } else {
-                    AudioFormat.ENCODING_INVALID
+                    Log.w(tag, "24-bit not supported on API ${Build.VERSION.SDK_INT}, falling back to 16-bit")
+                    AudioFormat.ENCODING_PCM_16BIT
                 }
 
                 Client.AudioFormat.Encoding.ENCODING_PCM_32BIT -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     AudioFormat.ENCODING_PCM_32BIT
                 } else {
-                    AudioFormat.ENCODING_INVALID
+                    Log.w(tag, "32-bit not supported on API ${Build.VERSION.SDK_INT}, falling back to 16-bit")
+                    AudioFormat.ENCODING_PCM_16BIT
                 }
 
                 else -> {
-                    AudioFormat.ENCODING_INVALID
+                    Log.w(tag, "unknown encoding ${format.encoding}, falling back to 16-bit")
+                    AudioFormat.ENCODING_PCM_16BIT
                 }
             }
 

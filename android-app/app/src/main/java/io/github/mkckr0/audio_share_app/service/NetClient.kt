@@ -17,9 +17,13 @@
 package io.github.mkckr0.audio_share_app.service
 
 import android.content.Context
+import android.media.AudioFormat
+import android.os.Build
 import android.util.Log
 import io.github.mkckr0.audio_share_app.R
 import io.github.mkckr0.audio_share_app.pb.Client.AudioFormat
+import io.github.mkckr0.audio_share_app.pb.Client.FormatConstraints
+import io.github.mkckr0.audio_share_app.pb.Client.NegotiateResponse
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.BoundDatagramSocket
 import io.ktor.network.sockets.ConnectedDatagramSocket
@@ -73,12 +77,14 @@ class NetClient(val context: Context) {
     private val udpSocket get() = _udpSocket!!
 
     private var _heartbeatLastTick = TimeSource.Monotonic.markNow()
+    private var _supportsNegotiate = true
 
     enum class CMD {
         CMD_NONE,
         CMD_GET_FORMAT,
         CMD_START_PLAY,
         CMD_HEARTBEAT,
+        CMD_NEGOTIATE_FORMAT,
     }
 
     interface Callback {
@@ -134,7 +140,43 @@ class NetClient(val context: Context) {
             if (cmd != CMD.CMD_GET_FORMAT) {
                 return@launch
             }
-            val audioFormat = tcpReadChannel.readAudioFormat() ?: return@launch
+            var audioFormat = tcpReadChannel.readAudioFormat() ?: return@launch
+            _callback?.launch {
+                log("get format: ${audioFormat.encoding} ${audioFormat.channels}ch ${audioFormat.sampleRate}Hz")
+            }
+
+            // negotiate format for Android compatibility
+            if (_supportsNegotiate) {
+                try {
+                    val constraints = getDeviceConstraints()
+                    Log.d(tag, "negotiate constraints: $constraints")
+                    tcpWriteChannel.writeCMD(CMD.CMD_NEGOTIATE_FORMAT)
+                    tcpWriteChannel.writeFormatConstraints(constraints)
+                    cmd = tcpReadChannel.readCMD()
+                    if (cmd == CMD.CMD_NEGOTIATE_FORMAT) {
+                        val response = tcpReadChannel.readNegotiateResponse()
+                        if (response != null && response.status == NegotiateResponse.Status.SUCCESS) {
+                            audioFormat = response.format
+                            Log.d(tag, "negotiated format: $audioFormat")
+                            _callback?.launch {
+                                log("negotiated: ${audioFormat.encoding} ${audioFormat.channels}ch ${audioFormat.sampleRate}Hz")
+                            }
+                        } else {
+                            Log.w(tag, "negotiation returned FAILED, using original format")
+                            _callback?.launch {
+                                log("negotiation failed, using original format")
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Old server doesn't support CMD_NEGOTIATE_FORMAT.
+                    // The server may have closed the connection.
+                    Log.w(tag, "negotiate failed (old server?), disabling: ${e.message}")
+                    _supportsNegotiate = false
+                    throw e   // propagate to trigger retry
+                }
+            }
+
             _callback?.launch {
                 onReceiveAudioFormat(audioFormat)
             }?.join()   // wait AudioTrack created
@@ -209,5 +251,70 @@ class NetClient(val context: Context) {
         _selectorManager = null
         _udpSocket?.close()
         _tcpSocket?.close()
+    }
+
+    companion object {
+        /**
+         * Build FormatConstraints based on the current device's playback capabilities.
+         * Encodings are ordered by preference (best quality first).
+         */
+        fun getDeviceConstraints(): FormatConstraints {
+            val builder = FormatConstraints.newBuilder()
+
+            // Preferred encodings ordered by quality.
+            // 24/32-bit integer PCM require API 31 (S).
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.addPreferredEncodings(AudioFormat.Encoding.ENCODING_PCM_FLOAT)
+                builder.addPreferredEncodings(AudioFormat.Encoding.ENCODING_PCM_32BIT)
+                builder.addPreferredEncodings(AudioFormat.Encoding.ENCODING_PCM_24BIT)
+            } else {
+                builder.addPreferredEncodings(AudioFormat.Encoding.ENCODING_PCM_FLOAT)
+            }
+            // 16-bit and 8-bit are universally supported on all API levels.
+            builder.addPreferredEncodings(AudioFormat.Encoding.ENCODING_PCM_16BIT)
+            builder.addPreferredEncodings(AudioFormat.Encoding.ENCODING_PCM_8BIT)
+
+            // Most phones have stereo output; cap at 2 channels.
+            builder.maxChannels = 2
+
+            builder.apiLevel = Build.VERSION.SDK_INT
+
+            return builder.build()
+        }
+
+        /**
+         * Given a server format and device constraints, return a format that the
+         * device can actually play. This mirrors the server-side logic and is
+         * used as a local fallback when negotiation is unavailable.
+         */
+        fun pickCompatibleFormat(
+            serverFormat: AudioFormat,
+            constraints: FormatConstraints
+        ): AudioFormat {
+            // If the device already supports the server's encoding, keep it.
+            if (constraints.preferredEncodingsList.contains(serverFormat.encoding)) {
+                val builder = serverFormat.toBuilder()
+                // Still clamp channels if needed.
+                if (constraints.hasMaxChannels() && serverFormat.channels > constraints.maxChannels) {
+                    builder.channels = constraints.maxChannels
+                }
+                return builder.build()
+            }
+            // Fall back to the device's first preferred encoding.
+            val fallbackEncoding = if (constraints.preferredEncodingsCount > 0) {
+                constraints.getPreferredEncodings(0)
+            } else {
+                AudioFormat.Encoding.ENCODING_PCM_16BIT
+            }
+            val maxChannels = if (constraints.hasMaxChannels() && constraints.maxChannels > 0) {
+                minOf(serverFormat.channels, constraints.maxChannels)
+            } else {
+                serverFormat.channels
+            }
+            return serverFormat.toBuilder()
+                .setEncoding(fallbackEncoding)
+                .setChannels(maxChannels)
+                .build()
+        }
     }
 }

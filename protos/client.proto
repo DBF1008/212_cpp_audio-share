@@ -33,3 +33,22 @@ message AudioFormat
 	int32 channels = 2;
 	int32 sample_rate = 3;
 }
+
+// Sent by the client to advertise its playback capabilities.
+// The server uses this to pick a compatible format or set up conversion.
+message FormatConstraints {
+   repeated AudioFormat.Encoding preferred_encodings = 1;  // ordered by preference
+   optional int32 max_channels = 2;                        // 0 or absent = no limit
+   repeated int32 preferred_sample_rates = 3;              // ordered by preference
+   optional int32 api_level = 4;                           // Android API level for diagnostics
+}
+
+// Server's response to CMD_NEGOTIATE_FORMAT.
+message NegotiateResponse {
+   enum Status {
+      SUCCESS = 0;
+      FAILED = 1;
+   }
+   Status status = 1;
+   AudioFormat format = 2;    // the format the server will stream (may differ from original)
+}

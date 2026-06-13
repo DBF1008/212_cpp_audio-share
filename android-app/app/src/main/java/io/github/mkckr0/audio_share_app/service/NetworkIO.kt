@@ -17,6 +17,8 @@
 package io.github.mkckr0.audio_share_app.service
 
 import io.github.mkckr0.audio_share_app.pb.Client.AudioFormat
+import io.github.mkckr0.audio_share_app.pb.Client.FormatConstraints
+import io.github.mkckr0.audio_share_app.pb.Client.NegotiateResponse
 import io.github.mkckr0.audio_share_app.service.NetClient.CMD
 import io.ktor.network.sockets.BoundDatagramSocket
 import io.ktor.network.sockets.ConnectedDatagramSocket
@@ -58,6 +60,20 @@ suspend fun ByteReadChannel.readCMD(): CMD {
 suspend fun ByteReadChannel.readAudioFormat(): AudioFormat? {
     val size = readIntLE()
     return AudioFormat.parseFrom(readByteBuffer(size))
+}
+
+suspend fun ByteWriteChannel.writeFormatConstraints(constraints: FormatConstraints) {
+    val bytes = constraints.toByteArray()
+    writePacket(Buffer().apply {
+        writeIntLe(bytes.size)
+        write(bytes)
+    }.build())
+    flush()
+}
+
+suspend fun ByteReadChannel.readNegotiateResponse(): NegotiateResponse? {
+    val size = readIntLE()
+    return NegotiateResponse.parseFrom(readByteBuffer(size))
 }
 
 suspend fun ConnectedDatagramSocket.writeIntLE(value: Int) {

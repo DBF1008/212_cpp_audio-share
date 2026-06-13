@@ -35,6 +35,7 @@ set(
 	lib_src_list
 	"src/network_manager.cpp"
 	"src/audio_manager.cpp"
+	"src/pcm_converter.cpp"
 	"src/${PLATFORM_NAME}/audio_manager_impl.cpp"
 	${PROTO_SRCS}
 )
@@ -60,3 +61,25 @@ if(${PLATFORM_NAME} STREQUAL "linux")
 endif()
 
 install(TARGETS server-cmd)
+
+# ── Unit tests ────────────────────────────────────────────────────────
+option(AUDIO_SHARE_BUILD_TESTS "Build unit tests" ON)
+if(AUDIO_SHARE_BUILD_TESTS)
+	find_package(GTest CONFIG)
+	if(GTest_FOUND)
+		enable_testing()
+		add_executable(pcm_converter_test
+			"test/pcm_converter_test.cpp"
+			"src/pcm_converter.cpp"
+			${PROTO_SRCS}
+		)
+		target_link_libraries(pcm_converter_test PRIVATE GTest::gtest GTest::gtest_main protobuf::libprotobuf)
+		if(AUDIO_SHARE_STATIC_LIBCPP AND UNIX)
+			target_link_options(pcm_converter_test PRIVATE "-static-libstdc++")
+		endif()
+		include(GoogleTest)
+		gtest_discover_tests(pcm_converter_test)
+	else()
+		message(STATUS "GTest not found, unit tests will not be built")
+	endif()
+endif()
