@@ -17,6 +17,7 @@
 #include "network_manager.hpp"
 #include "formatter.hpp"
 #include "audio_manager.hpp"
+#include "ip_address.hpp"
 
 #include <list>
 #include <ranges>
@@ -114,35 +115,10 @@ std::string network_manager::get_default_address()
 
 std::string network_manager::select_default_address(const std::vector<std::string>& address_list)
 {
-    if (address_list.empty()) {
-        return {};
-    }
-
-    auto is_private_address = [](const std::string& address) {
-        constexpr uint32_t private_addr_list[] = {
-            0x0a000000,
-            0xac100000,
-            0xc0a80000,
-        };
-
-        uint32_t addr;
-        inet_pton(AF_INET, address.c_str(), &addr);
-        addr = ntohl(addr);
-        for (auto&& private_addr : private_addr_list) {
-            if ((addr & private_addr) == private_addr) {
-                return true;
-            }
-        }
-
-        return false;
-    };
-
-    for (auto&& address : address_list) {
-        if (is_private_address(address)) {
-            return address;
-        }
-    }
-    return address_list.front();
+    // Prefer a private (LAN-reachable) IPv4 address so clients on the same
+    // network are pointed at a reachable listen address. The RFC 1918 matching
+    // lives in ip_address.hpp so it can be unit tested without the asio stack.
+    return ip_address::select_default_address(address_list);
 }
 
 void network_manager::start_server(const std::string& host, uint16_t port, const audio_manager::capture_config& capture_config)

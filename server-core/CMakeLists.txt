@@ -60,3 +60,11 @@ if(${PLATFORM_NAME} STREQUAL "linux")
 endif()
 
 install(TARGETS server-cmd)
+
+option(AUDIO_SHARE_BUILD_TESTS "Build server-core unit tests" OFF)
+if(AUDIO_SHARE_BUILD_TESTS)
+	enable_testing()
+	add_executable(test_ip_address "test/test_ip_address.cpp")
+	target_include_directories(test_ip_address PRIVATE "src")
+	add_test(NAME test_ip_address COMMAND test_ip_address)
+endif()
